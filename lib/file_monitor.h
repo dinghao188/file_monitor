@@ -8,12 +8,23 @@
 #include <memory>
 #include <sys/inotify.h>
 
+namespace fmon
+{
+
 class FileInfo;
+using FileInfoVector = std::vector<FileInfo>;
+using ConsumeFileFuncType = std::function<void(std::shared_ptr<FileInfoVector>)>;
+
+struct WatchPoint {
+    WatchPoint(const std::string &pathname = "", uint32_t interested_events = 0)
+        : pathname(pathname), interested_events(interested_events) {}
+
+    std::string pathname;
+    uint32_t interested_events;
+};
 
 class FileMonitor {
 public:
-    using FileInfoVector = std::vector<FileInfo>;
-    using ConsumeFileFuncType = std::function<void(const std::string &filename)>;
     static const size_t FILENAME_LEN = 1024;
     static const size_t MAX_EVENTS = 1024;
 
@@ -23,9 +34,7 @@ public:
 
     bool Initialize();
 
-    bool AddDirectory(const char *dirname,
-                      ConsumeFileFuncType &&new_file_consume_func,
-                      ConsumeFileFuncType &&mod_file_consume_func);
+    bool AddDirectory(const char *dirname, ConsumeFileFuncType &&file_consume_func, uint32_t flags);
 
     void Execute() { NotifierCallback(); }
 
@@ -40,16 +49,14 @@ protected:
 private:
     //inotify instance
     int notifier_fd_;
-    //watched files
-    std::unordered_map<int, std::string> watching_files_;
-    //new created files
-    std::unordered_map<int, std::shared_ptr<FileInfoVector>> new_files_;
-    //modified files 
-    std::unordered_map<int, std::shared_ptr<FileInfoVector>> mod_files_;
+    //watched files and dirs
+    std::unordered_map<int, WatchPoint> watch_points_;
+    //files collected by notifier
+    std::unordered_map<int, std::shared_ptr<FileInfoVector>> files_;
 
-    //the function to consume new created files and modified files
-    std::unordered_map<int, ConsumeFileFuncType> new_file_consume_funcs_;
-    std::unordered_map<int, ConsumeFileFuncType> mod_file_consume_funcs_;
+    //the function to consume the files
+    std::unordered_map<int, ConsumeFileFuncType> file_consume_funcs_;
 };
 
+}
 #endif

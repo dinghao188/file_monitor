@@ -1,4 +1,5 @@
 #include <sys/inotify.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <cstdio>
 #include <sstream>
@@ -6,6 +7,9 @@
 
 #include "file_monitor.h"
 #include "file_info.h"
+
+namespace fmon
+{
 
 FileMonitor::FileMonitor() {
     notifier_fd_ = -1;
@@ -19,18 +23,21 @@ FileMonitor::~FileMonitor() {
 }
 
 bool FileMonitor::Initialize() {
+    //get a inotify instance
     notifier_fd_ = inotify_init();
     if (notifier_fd_ < 0) {
         perror("inotify_init");
         return false;
     }
+    //set nonblocking
+    auto fl = fcntl(notifier_fd_, F_GETFL);
+    fl |= O_NONBLOCK;
+    fcntl(notifier_fd_, F_SETFL, fl);
     return true;
 }
 
-bool FileMonitor::AddDirectory(const char *dirname, 
-    FileMonitor::ConsumeFileFuncType &&new_file_consume_func, FileMonitor::ConsumeFileFuncType &&mod_file_consume_func)
+bool FileMonitor::AddDirectory(const char *dirname, ConsumeFileFuncType &&file_consume_func, uint32_t flags)
 {
-    uint32_t flags = IN_CREATE | IN_MOVED_TO | IN_MODIFY;
     int wd = inotify_add_watch(notifier_fd_, dirname, flags);
     if (wd < 0) {
         perror("inotify_add_watch");
@@ -38,17 +45,16 @@ bool FileMonitor::AddDirectory(const char *dirname,
     }
 
     auto full_path_name = GetFullPathName(dirname);
-    if (watching_files_.count(wd) != 0) {
+    if (watch_points_.count(wd) != 0) {
         printf("WARNING: %s has been watched.\n", full_path_name.c_str());
         return false;
     }
 
-    watching_files_[wd] = std::move(full_path_name);
-    new_files_[wd] = std::make_shared<FileInfoVector>();
-    mod_files_[wd] = std::make_shared<FileInfoVector>();
-    new_file_consume_funcs_.emplace(wd, std::forward<ConsumeFileFuncType>(new_file_consume_func));
-    mod_file_consume_funcs_.emplace(wd, std::forward<ConsumeFileFuncType>(mod_file_consume_func));
+    watch_points_[wd] = { full_path_name, flags };
+    files_[wd] = std::make_shared<FileInfoVector>();
+    file_consume_funcs_[wd] = std::move(file_consume_func);
 
+    printf("watching for [%s] ... ...\n", full_path_name.c_str());
     return true;
 }
 
@@ -66,54 +72,43 @@ std::string FileMonitor::GetFullPathName(const char *path) {
 }
 
 void FileMonitor::ConsumeOneWd(int wd) {
-    auto files = new_files_[wd];
+    auto files = files_[wd];
     if (files == nullptr) {
         printf("%d not watched\n", wd);
         return;
     }
-    auto &new_file_consume_f = new_file_consume_funcs_[wd];
-    for (const auto &file : *files) {
-        new_file_consume_f(file.filename);
-    }
-    files->clear();
-
-    files = mod_files_[wd];
-    auto &mod_file_consume_f = mod_file_consume_funcs_[wd];
-    for (const auto &file : *files) {
-        mod_file_consume_f(file.filename);
-    }
-    files->clear();
+    auto &new_file_consume_f = file_consume_funcs_[wd];
+    new_file_consume_f(files);
+    files_[wd] = std::make_shared<FileInfoVector>();
 }
 
 void FileMonitor::NotifierCallback() {
-    static char events_buf[MAX_EVENTS*(sizeof(inotify_event)+FILENAME_LEN)] = { 0 };
+    static char events_buf[MAX_EVENTS*(sizeof(inotify_event)+FILENAME_MAX)] = { 0 };
     static std::unordered_set<int> wds;
     
     wds.clear();
     ssize_t len = read(notifier_fd_, events_buf, sizeof(events_buf));
 
+    //read all events from notifier
     ssize_t cur_event_pos = 0;
     inotify_event *event = nullptr;
     while (cur_event_pos < len) {
         event = reinterpret_cast<inotify_event*>(events_buf+cur_event_pos);
         wds.insert(event->wd);
-        auto &watch_point_path = watching_files_[event->wd];
+        auto &watch_point = watch_points_[event->wd];
         FileInfo file_info = {event->name, (event->mask & IN_ISDIR) != 0 };
 
-        if (event->mask & IN_CREATE | event->mask & IN_MOVED_TO) {
-            auto files_vector = new_files_[event->wd];
-            printf("%s [%s] in [%s] was created!\n", file_info.dir_flag ? " dir" : "file", event->name, watch_point_path.c_str());
-            files_vector->emplace_back(std::move(file_info));
-        } else if (event->mask & IN_MODIFY) {
-            auto &files_vector = mod_files_[event->wd];
-            printf("%s [%s] in [%s] was modified!\n", file_info.dir_flag ? " dir" : "file", event->name, watch_point_path.c_str());
+        if ((event->mask & watch_point.interested_events) != 0) {
+            auto files_vector = files_[event->wd];
             files_vector->emplace_back(std::move(file_info));
         }
-
         cur_event_pos += sizeof(inotify_event)+event->len;
     }
 
+    //consume all collected files this time
     for (auto wd : wds) {
         ConsumeOneWd(wd);
     }
+}
+
 }
