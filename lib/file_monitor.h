@@ -2,6 +2,7 @@
 #define FILE_MONITOR_H
 
 #include <string>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 #include <memory>
@@ -12,6 +13,7 @@ class FileInfo;
 class FileMonitor {
 public:
     using FileInfoVector = std::vector<FileInfo>;
+    using ConsumeFileFuncType = std::function<void(const std::string &filename)>;
     static const size_t FILENAME_LEN = 1024;
     static const size_t MAX_EVENTS = 1024;
 
@@ -21,16 +23,19 @@ public:
 
     bool Initialize();
 
-    bool AddDirectory(const char *dirname, uint32_t flag = IN_CREATE);
+    bool AddDirectory(const char *dirname,
+                      ConsumeFileFuncType &&new_file_consume_func,
+                      ConsumeFileFuncType &&mod_file_consume_func);
 
     void Execute() { NotifierCallback(); }
-
-    void Consume(const char *dir);
 
 protected:
     std::string GetFullPathName(const char *path);
     
     void NotifierCallback();
+
+    //consume the files watched by wd
+    void ConsumeOneWd(int wd);
 
 private:
     //inotify instance
@@ -38,9 +43,13 @@ private:
     //watched files
     std::unordered_map<int, std::string> watching_files_;
     //new created files
-    std::unordered_map<int, std::shared_ptr<FileInfoVector>> new_created_files_;
+    std::unordered_map<int, std::shared_ptr<FileInfoVector>> new_files_;
     //modified files 
-    std::unordered_map<int, std::shared_ptr<FileInfoVector>> modified_files_;
+    std::unordered_map<int, std::shared_ptr<FileInfoVector>> mod_files_;
+
+    //the function to consume new created files and modified files
+    std::unordered_map<int, ConsumeFileFuncType> new_file_consume_funcs_;
+    std::unordered_map<int, ConsumeFileFuncType> mod_file_consume_funcs_;
 };
 
 #endif
