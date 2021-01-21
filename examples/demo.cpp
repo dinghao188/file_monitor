@@ -1,10 +1,11 @@
 #include <thread>
+#include <map>
 #include "file_monitor.h"
 #include "file_info.h"
 
 using namespace std;
 
-void ProcessOneFile(shared_ptr<fmon::FileInfoVector> files) {
+void Process(shared_ptr<fmon::FileInfoVector> files) {
     static uint32_t count = 0;
     printf("-------------the no.%u time toggled-------------\n", ++count);
     for (const auto &file_info : *files) {
@@ -20,7 +21,7 @@ int main() {
         return 1;
     }
 
-    fm.AddDirectory("/root/workspace/jobs", ProcessOneFile, IN_CREATE|IN_MOVED_TO);
+    fm.AddDirectory("/root/workspace/jobs", Process, IN_CREATE|IN_MOVED_TO);
 
     while (1) {
         fm.Execute();

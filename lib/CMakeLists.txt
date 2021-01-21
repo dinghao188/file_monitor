@@ -1,1 +1,0 @@
-add_library(file_monitor SHARED file_monitor.cpp)
